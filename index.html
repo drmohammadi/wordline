@@ -46,7 +46,7 @@
         color: inherit;
         font: inherit;
       }
-      #address {
+      #address, #case {
         border-bottom: 1px solid #3a3834;
         padding: 0.4rem 0;
         font-size: 0.85rem;
@@ -59,9 +59,13 @@
         font-size: 2.4rem;
       }
       input:focus { outline: none; }
-      .bar { display: flex; gap: 0.6rem; align-items: center; margin-top: 1.2rem; }
-      button { border: 0; cursor: pointer; font: inherit; }
-      #connect, #read {
+      .bar { display: flex; gap: 0.6rem; align-items: center; margin-top: 1.2rem; flex-wrap: wrap; }
+      button {
+        border: 0;
+        cursor: pointer;
+        font: inherit;
+      }
+      #connect, #read, #standing {
         height: 2.2rem;
         padding: 0 0.8rem;
         background: transparent;
@@ -90,21 +94,25 @@
         font-family: Literata, serif;
         font-size: 1.45rem;
         line-height: 1.35;
+        white-space: pre-wrap;
       }
     </style>
   </head>
   <body>
     <main>
-      <p class="mark">One dictionary, first definition</p>
+      <p class="mark">Two dictionaries must agree</p>
       <h1>Wordline</h1>
       <label for="address">Contract</label>
-      <input id="address" value="0xE3B9Ce0c00cD4f6Bd467153373180Cd6b52F1ed2" autocomplete="off" />
-      <label for="word">Word</label>
-      <input id="word" maxlength="20" placeholder="people" autocomplete="off" />
+      <input id="address" value="0x7545a5aA6048D97671c680C745CfbAE28636D487" autocomplete="off" />
+      <label for="word">Word to lock</label>
+      <input id="word" maxlength="20" placeholder="consensus" autocomplete="off" />
+      <label for="case">Case id</label>
+      <input id="case" inputmode="numeric" placeholder="1" autocomplete="off" />
       <div class="bar">
         <button id="connect" type="button">Connect</button>
-        <button id="read" type="button">Saved</button>
-        <button id="submit" type="button">Look up</button>
+        <button id="read" type="button">Read case</button>
+        <button id="standing" type="button">Standing lock</button>
+        <button id="submit" type="button">Propose</button>
       </div>
       <p id="wallet"></p>
       <p id="status">idle</p>

@@ -4,6 +4,7 @@ import { TransactionHashVariant, TransactionStatus } from "genlayer-js/types";
 
 const addressEl = document.querySelector("#address");
 const wordEl = document.querySelector("#word");
+const caseEl = document.querySelector("#case");
 const walletEl = document.querySelector("#wallet");
 const statusEl = document.querySelector("#status");
 const errorEl = document.querySelector("#error");
@@ -23,7 +24,7 @@ function setError(text) {
 function contractAddress() {
   const address = addressEl.value.trim();
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
-    throw new Error("Paste the new deployed contract address.");
+    throw new Error("Paste the deployed lock contract address.");
   }
   return address;
 }
@@ -36,36 +37,21 @@ function word() {
   return value;
 }
 
-function asRecord(value) {
-  if (typeof value === "string") {
-    try {
-      return asRecord(JSON.parse(value));
-    } catch {
-      return {};
-    }
-  }
-  if (!value || typeof value !== "object") return {};
-  return value;
-}
-
 function showResult(value) {
-  const data = asRecord(value);
-  const status = data.status || "";
-  if (!status) {
-    partEl.textContent = "";
-    definitionEl.textContent = "No lookup saved yet.";
-    return;
-  }
-  partEl.textContent = data.part ? `${status} · ${data.part}` : status;
-  if (status === "FOUND") {
-    definitionEl.textContent = data.definition || "";
-  } else if (status === "MISSING") {
-    definitionEl.textContent = "This word is not in the dictionary.";
-  } else if (status === "UNAVAILABLE") {
-    definitionEl.textContent = "The dictionary could not be read. Nothing was invented.";
-  } else {
-    definitionEl.textContent = data.definition || "";
-  }
+  const data = value && typeof value === "object" ? value : {};
+  partEl.textContent = data.status
+    ? `${data.status}${data.agreed_part ? " · " + data.agreed_part : ""}`
+    : "";
+  const lines = [
+    data.case_id ? `case ${data.case_id}` : "",
+    data.caller ? `caller ${data.caller}` : "",
+    data.source_a || data.source_b
+      ? `sources ${data.source_a || "-"} / ${data.source_b || "-"}`
+      : "",
+    data.lock_ref ? `standing case ${data.lock_ref}` : "",
+    data.word ? `word ${data.word}` : "",
+  ].filter(Boolean);
+  definitionEl.textContent = lines.join("\n");
 }
 
 async function connect() {
@@ -80,33 +66,50 @@ async function connect() {
   walletEl.textContent = accounts[0];
 }
 
-async function readSaved() {
-  setError("");
-  const address = contractAddress();
-  if (!client) await connect();
-  setStatus("reading");
-  const value = await client.readContract({
-    address,
-    functionName: "get_result",
-    args: [],
+async function readOnce(functionName, args) {
+  return client.readContract({
+    address: contractAddress(),
+    functionName,
+    args,
     transactionHashVariant: TransactionHashVariant.LATEST_FINAL,
   });
+}
+
+async function readWithRetry(functionName, args) {
+  let last = null;
+  for (let i = 0; i < 8; i += 1) {
+    try {
+      return await readOnce(functionName, args);
+    } catch (error) {
+      last = error;
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+    }
+  }
+  throw last;
+}
+
+async function readCase() {
+  setError("");
+  const caseId = caseEl.value.trim();
+  if (!/^[1-9][0-9]*$/.test(caseId)) throw new Error("Enter a case id.");
+  if (!client) await connect();
+  setStatus("reading");
+  const value = await readWithRetry("get_case", [caseId]);
   showResult(value);
-  const data = asRecord(value);
-  setStatus(data.status || "saved");
+  setStatus(value && value.status ? value.status : "saved");
 }
 
-function leaderFailed(receipt) {
-  const rows = receipt?.consensus_data?.leader_receipt;
-  const list = Array.isArray(rows) ? rows : rows ? [rows] : [];
-  return list.some(
-    (item) =>
-      (item?.mode === "leader" || item?.execution_mode === "leader") &&
-      (item?.execution_result === "ERROR" || item?.result === "ERROR"),
-  );
+async function readStanding() {
+  setError("");
+  const term = word();
+  if (!client) await connect();
+  setStatus("reading");
+  const value = await readWithRetry("get_standing", [term]);
+  showResult(value);
+  setStatus(value && value.status ? value.status : "saved");
 }
 
-async function lookup() {
+async function propose() {
   setError("");
   const address = contractAddress();
   const term = word();
@@ -114,7 +117,7 @@ async function lookup() {
   setStatus("pending");
   const txId = await client.writeContract({
     address,
-    functionName: "define",
+    functionName: "propose",
     args: [term],
     value: 0n,
   });
@@ -125,10 +128,15 @@ async function lookup() {
     interval: 5000,
     retries: 120,
   });
-  if (leaderFailed(receipt)) {
-    throw new Error("The lookup finalized with an error and saved nothing.");
+  const leader = receipt?.consensus_data?.leader_receipt?.find(
+    (item) => item?.mode === "leader",
+  );
+  if (leader?.execution_result === "ERROR") {
+    throw new Error("The proposal finalized with an error and saved nothing.");
   }
-  await readSaved();
+  const count = await readWithRetry("get_case_count", []);
+  caseEl.value = String(count);
+  await readCase();
 }
 
 document.querySelector("#connect").addEventListener("click", () => {
@@ -138,13 +146,19 @@ document.querySelector("#connect").addEventListener("click", () => {
   });
 });
 document.querySelector("#read").addEventListener("click", () => {
-  readSaved().catch((error) => {
+  readCase().catch((error) => {
+    setStatus("error");
+    setError(error.message || String(error));
+  });
+});
+document.querySelector("#standing").addEventListener("click", () => {
+  readStanding().catch((error) => {
     setStatus("error");
     setError(error.message || String(error));
   });
 });
 document.querySelector("#submit").addEventListener("click", () => {
-  lookup().catch((error) => {
+  propose().catch((error) => {
     setStatus("error");
     setError(error.message || String(error));
   });
