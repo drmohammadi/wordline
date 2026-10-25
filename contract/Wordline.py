@@ -1,102 +1,194 @@
 # { "Depends": "py-genlayer:1jb45aa8ynh2a9c9xn3b7qqh8sm5q93hwfp7jqmwsfhh8jpz09h6" }
-"""Wordline: store the dictionary entry for one English word."""
+"""Wordline: lock a word only when two dictionaries agree. A lock is never replaced."""
 
+from dataclasses import dataclass
 from genlayer import *
 import json
 
-MAX_DEFINITION_LEN = 400
 PARTS = {
     "n": "noun",
+    "noun": "noun",
     "v": "verb",
+    "verb": "verb",
     "adj": "adjective",
+    "adjective": "adjective",
     "adv": "adverb",
-    "u": "interjection",
+    "adverb": "adverb",
 }
+CLASSES = ("noun", "verb", "adjective", "adverb", "missing", "unread")
+
+
+def _body(response) -> str:
+    raw = response.body
+    return raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+
+
+def _datamuse(word: str) -> str:
+    try:
+        response = gl.nondet.web.get(
+            "https://api.datamuse.com/words?sp=" + word + "&md=d&max=1"
+        )
+        if getattr(response, "status_code", 200) != 200:
+            return "unread"
+        data = json.loads(_body(response))
+    except Exception:
+        return "unread"
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return "missing"
+    if str(data[0].get("word", "")).lower() != word:
+        return "missing"
+    defs = data[0].get("defs")
+    if not isinstance(defs, list) or not defs:
+        return "missing"
+    code, sep, _rest = str(defs[0]).partition("\t")
+    if sep == "":
+        return "missing"
+    return PARTS.get(code, "unread")
+
+
+def _dictionary(word: str) -> str:
+    try:
+        response = gl.nondet.web.get(
+            "https://en.wiktionary.org/api/rest_v1/page/definition/" + word
+        )
+        code = getattr(response, "status_code", None)
+        if code is None:
+            code = getattr(response, "status", 200)
+        if code != 200:
+            return "missing"
+        data = json.loads(_body(response))
+    except Exception:
+        return "unread"
+    if not isinstance(data, dict):
+        return "missing"
+    entries = data.get("en")
+    if not isinstance(entries, list) or not entries or not isinstance(entries[0], dict):
+        return "missing"
+    return PARTS.get(str(entries[0].get("partOfSpeech", "")).lower(), "unread")
+
+
+@allow_storage
+@dataclass
+class TermCase:
+    case_id: str
+    caller: Address
+    word: str
+    status: str
+    agreed_part: str
+    source_a: str
+    source_b: str
+    lock_ref: str
 
 
 class Wordline(gl.Contract):
-    word: str
-    status: str
-    part: str
-    definition: str
+    next_id: u256
+    cases: TreeMap[str, TermCase]
 
     def __init__(self):
-        self.word = ""
-        self.status = ""
-        self.part = ""
-        self.definition = ""
+        self.next_id = u256(0)
 
-    @gl.public.view
-    def get_result(self):
+    def _record(self, item: TermCase):
         return {
-            "word": self.word,
-            "status": self.status,
-            "part": self.part,
-            "definition": self.definition,
+            "case_id": item.case_id,
+            "caller": str(item.caller),
+            "word": item.word,
+            "status": item.status,
+            "agreed_part": item.agreed_part,
+            "source_a": item.source_a,
+            "source_b": item.source_b,
+            "lock_ref": item.lock_ref,
         }
 
+    def _standing_id(self, word: str) -> str:
+        found = ""
+        for case_id, item in self.cases.items():
+            if item.word == word and item.status == "LOCKED":
+                if found == "" or int(case_id) < int(found):
+                    found = case_id
+        return found
+
+    def _save(self, word: str, status: str, agreed: str, source_a: str, source_b: str, lock_ref: str) -> str:
+        case_id = str(self.next_id + u256(1))
+        self.next_id = self.next_id + u256(1)
+        self.cases[case_id] = TermCase(
+            case_id=case_id,
+            caller=gl.message.sender_address,
+            word=word,
+            status=status,
+            agreed_part=agreed,
+            source_a=source_a,
+            source_b=source_b,
+            lock_ref=lock_ref,
+        )
+        return case_id
+
+    @gl.public.view
+    def get_case_count(self):
+        return str(self.next_id)
+
+    @gl.public.view
+    def get_case(self, case_id: str):
+        case_id = "" if case_id is None else str(case_id).strip()
+        if case_id not in self.cases:
+            raise gl.vm.UserError("unknown case")
+        return self._record(self.cases[case_id])
+
+    @gl.public.view
+    def get_standing(self, word: str):
+        word = "" if word is None else str(word).strip().lower()
+        standing = self._standing_id(word)
+        if standing == "":
+            raise gl.vm.UserError("no standing lock")
+        return self._record(self.cases[standing])
+
+    @gl.public.view
+    def get_my_case_ids(self):
+        caller = gl.message.sender_address
+        found = []
+        for case_id, item in self.cases.items():
+            if item.caller == caller:
+                found.append(case_id)
+        found.sort(key=lambda item: int(item))
+        return found
+
     @gl.public.write
-    def define(self, word: str):
+    def propose(self, word: str):
         word = "" if word is None else str(word).strip().lower()
         if len(word) < 2 or len(word) > 20 or not word.isalpha():
             raise gl.vm.UserError("word must be 2 to 20 letters")
 
-        def lookup():
-            try:
-                response = gl.nondet.web.get(
-                    "https://api.datamuse.com/words?sp=" + word + "&md=d&max=1"
-                )
-                code = getattr(response, "status_code", 200)
-                if code != 200:
-                    return json.dumps(
-                        {"definition": "", "part": "", "status": "UNAVAILABLE"},
-                        sort_keys=True,
-                    )
-                body = response.body
-                text = body.decode("utf-8") if isinstance(body, bytes) else str(body)
-                data = json.loads(text)
-            except Exception:
-                return json.dumps(
-                    {"definition": "", "part": "", "status": "UNAVAILABLE"},
-                    sort_keys=True,
-                )
+        standing = self._standing_id(word)
+        if standing != "":
+            self._save(
+                word,
+                "ALREADY_LOCKED",
+                self.cases[standing].agreed_part,
+                "",
+                "",
+                standing,
+            )
+            return
 
-            if not isinstance(data, list) or not data:
-                return json.dumps(
-                    {"definition": "", "part": "", "status": "MISSING"},
-                    sort_keys=True,
-                )
-            entry = data[0]
-            if not isinstance(entry, dict) or entry.get("word") != word:
-                return json.dumps(
-                    {"definition": "", "part": "", "status": "MISSING"},
-                    sort_keys=True,
-                )
-            defs = entry.get("defs")
-            if not isinstance(defs, list) or not defs:
-                return json.dumps(
-                    {"definition": "", "part": "", "status": "MISSING"},
-                    sort_keys=True,
-                )
-            raw = str(defs[0])
-            code_part, sep, meaning = raw.partition("\t")
-            if sep == "":
-                meaning = raw
-                code_part = ""
+        def compare():
             return json.dumps(
-                {
-                    "definition": meaning.strip()[:MAX_DEFINITION_LEN],
-                    "part": PARTS.get(code_part, code_part),
-                    "status": "FOUND",
-                },
+                {"a": _datamuse(word), "b": _dictionary(word)},
                 sort_keys=True,
             )
 
-        parsed = json.loads(gl.eq_principle.strict_eq(lookup))
-        if parsed.get("status") not in ("FOUND", "MISSING", "UNAVAILABLE"):
-            raise gl.vm.UserError("lookup did not return an allowed status")
+        parsed = json.loads(gl.eq_principle.strict_eq(compare))
+        source_a = parsed.get("a", "")
+        source_b = parsed.get("b", "")
+        if source_a not in CLASSES or source_b not in CLASSES:
+            raise gl.vm.UserError("a source returned an unknown class")
 
-        self.word = word
-        self.status = parsed["status"]
-        self.part = parsed.get("part", "")
-        self.definition = parsed.get("definition", "")[:MAX_DEFINITION_LEN]
+        parts = ("noun", "verb", "adjective", "adverb")
+        if source_a in parts and source_b in parts and source_a == source_b:
+            self._save(word, "LOCKED", source_a, source_a, source_b, "")
+        elif source_a in parts and source_b in parts:
+            self._save(word, "REFUSED", "", source_a, source_b, "")
+        elif source_a == "unread" or source_b == "unread":
+            self._save(word, "UNAVAILABLE", "", source_a, source_b, "")
+        elif source_a in parts or source_b in parts:
+            self._save(word, "UNCONFIRMED", "", source_a, source_b, "")
+        else:
+            self._save(word, "UNKNOWN", "", source_a, source_b, "")
