@@ -4,14 +4,12 @@ import { TransactionHashVariant, TransactionStatus } from "genlayer-js/types";
 
 const addressEl = document.querySelector("#address");
 const wordEl = document.querySelector("#word");
+const caseEl = document.querySelector("#case");
 const walletEl = document.querySelector("#wallet");
 const statusEl = document.querySelector("#status");
 const errorEl = document.querySelector("#error");
 const partEl = document.querySelector("#part");
 const definitionEl = document.querySelector("#definition");
-
-const stored = localStorage.getItem("wordline.address");
-if (stored) addressEl.value = stored;
 
 let client = null;
 
@@ -26,9 +24,8 @@ function setError(text) {
 function contractAddress() {
   const address = addressEl.value.trim();
   if (!/^0x[0-9a-fA-F]{40}$/.test(address)) {
-    throw new Error("Paste the deployed contract address.");
+    throw new Error("Paste the new deployed contract address.");
   }
-  localStorage.setItem("wordline.address", address);
   return address;
 }
 
@@ -42,8 +39,19 @@ function word() {
 
 function showResult(value) {
   const data = value && typeof value === "object" ? value : {};
-  partEl.textContent = data.part || "";
-  definitionEl.textContent = data.definition || data.status || "";
+  partEl.textContent = data.status
+    ? `${data.status}${data.agreed_part ? " · " + data.agreed_part : ""}`
+    : "";
+  const lines = [
+    data.case_id ? `case ${data.case_id}` : "",
+    data.caller ? `caller ${data.caller}` : "",
+    data.source_a || data.source_b
+      ? `sources ${data.source_a || "-"} / ${data.source_b || "-"}`
+      : "",
+    data.lock_ref ? `standing case ${data.lock_ref}` : "",
+    data.word ? `word ${data.word}` : "",
+  ].filter(Boolean);
+  definitionEl.textContent = lines.join("\n");
 }
 
 async function connect() {
@@ -58,22 +66,50 @@ async function connect() {
   walletEl.textContent = accounts[0];
 }
 
-async function readSaved() {
-  setError("");
-  const address = contractAddress();
-  if (!client) await connect();
-  setStatus("reading");
-  const value = await client.readContract({
-    address,
-    functionName: "get_result",
-    args: [],
+async function readOnce(functionName, args) {
+  return client.readContract({
+    address: contractAddress(),
+    functionName,
+    args,
     transactionHashVariant: TransactionHashVariant.LATEST_FINAL,
   });
+}
+
+async function readWithRetry(functionName, args) {
+  let last = null;
+  for (let i = 0; i < 8; i += 1) {
+    try {
+      return await readOnce(functionName, args);
+    } catch (error) {
+      last = error;
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+    }
+  }
+  throw last;
+}
+
+async function readCase() {
+  setError("");
+  const caseId = caseEl.value.trim();
+  if (!/^[1-9][0-9]*$/.test(caseId)) throw new Error("Enter a case id.");
+  if (!client) await connect();
+  setStatus("reading");
+  const value = await readWithRetry("get_case", [caseId]);
   showResult(value);
   setStatus(value && value.status ? value.status : "saved");
 }
 
-async function lookup() {
+async function readStanding() {
+  setError("");
+  const term = word();
+  if (!client) await connect();
+  setStatus("reading");
+  const value = await readWithRetry("get_standing", [term]);
+  showResult(value);
+  setStatus(value && value.status ? value.status : "saved");
+}
+
+async function propose() {
   setError("");
   const address = contractAddress();
   const term = word();
@@ -81,7 +117,7 @@ async function lookup() {
   setStatus("pending");
   const txId = await client.writeContract({
     address,
-    functionName: "define",
+    functionName: "propose",
     args: [term],
     value: 0n,
   });
@@ -96,9 +132,11 @@ async function lookup() {
     (item) => item?.mode === "leader",
   );
   if (leader?.execution_result === "ERROR") {
-    throw new Error("The lookup finalized with an error and saved nothing.");
+    throw new Error("The proposal finalized with an error and saved nothing.");
   }
-  await readSaved();
+  const count = await readWithRetry("get_case_count", []);
+  caseEl.value = String(count);
+  await readCase();
 }
 
 document.querySelector("#connect").addEventListener("click", () => {
@@ -108,13 +146,19 @@ document.querySelector("#connect").addEventListener("click", () => {
   });
 });
 document.querySelector("#read").addEventListener("click", () => {
-  readSaved().catch((error) => {
+  readCase().catch((error) => {
+    setStatus("error");
+    setError(error.message || String(error));
+  });
+});
+document.querySelector("#standing").addEventListener("click", () => {
+  readStanding().catch((error) => {
     setStatus("error");
     setError(error.message || String(error));
   });
 });
 document.querySelector("#submit").addEventListener("click", () => {
-  lookup().catch((error) => {
+  propose().catch((error) => {
     setStatus("error");
     setError(error.message || String(error));
   });

@@ -46,7 +46,7 @@
         color: inherit;
         font: inherit;
       }
-      #address {
+      #address, #case {
         border-bottom: 1px solid #3a3834;
         padding: 0.4rem 0;
         font-size: 0.85rem;
@@ -99,16 +99,19 @@
   </head>
   <body>
     <main>
-      <p class="mark">Dictionary on Studionet</p>
+      <p class="mark">Two dictionaries must agree</p>
       <h1>Wordline</h1>
       <label for="address">Contract</label>
-      <input id="address" value="0xCC8E856FC52014F25Ab92Cc4044651999996dfAc" autocomplete="off" />
-      <label for="word">One word</label>
+      <input id="address" value="0xB7aD46d539b9b66D0bad03081704aA3f24a5fB23" autocomplete="off" />
+      <label for="word">Word to lock</label>
       <input id="word" maxlength="20" placeholder="consensus" autocomplete="off" />
+      <label for="case">Case id</label>
+      <input id="case" inputmode="numeric" placeholder="1" autocomplete="off" />
       <div class="bar">
         <button id="connect" type="button">Connect</button>
-        <button id="read" type="button">Saved</button>
-        <button id="submit" type="button">Look up</button>
+        <button id="read" type="button">Read case</button>
+        <button id="standing" type="button">Standing lock</button>
+        <button id="submit" type="button">Propose</button>
       </div>
       <p id="wallet"></p>
       <p id="status">idle</p>
